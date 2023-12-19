@@ -116,8 +116,8 @@ def main():
         return 1
     pull_request_data = json.loads(pull_request_result.text)
     
-    print('pull_request_data', pull_request_data)
-    print('pull_request_url', pull_request_url)
+    #print('pull_request_data', pull_request_data)
+    #print('pull_request_url', pull_request_url)
 
     if pull_request_data["body"]:
         # We could look for /ai-bot-input{...} and replace it with the generated description
@@ -134,7 +134,19 @@ def main():
 
     pull_request_title = pull_request_data["title"]
     # Add commits to the prompt
-    pull_request_commits = pull_request_data["commits"]
+    pull_commit_url = f"{pull_request_url}/commits"
+    pull_commit_result = requests.get(
+        pull_commit_url,
+        headers=authorization_header,
+    )
+    if pull_commit_result.status_code != requests.codes.ok:
+        print(
+            "Request to get list of commits failed with error code: "
+            + str(pull_commit_result.status_code)
+        )
+        return 1
+    pull_commit_data = json.loads(pull_commit_result.text)
+    print('pull_commit_data', pull_commit_data)
 
     pull_request_files = []
     # Request a maximum of 10 pages (300 files)
