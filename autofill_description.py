@@ -328,7 +328,7 @@ def main():
 
     print(f"Generated pull request description: '{generated_pr_description}'")
 
-    write_description_as_comment()
+    write_description_as_comment(pull_request_url, authorization_header, generated_pr_description)
 
 
 if __name__ == "__main__":
