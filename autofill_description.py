@@ -115,8 +115,12 @@ def main():
         )
         return 1
     pull_request_data = json.loads(pull_request_result.text)
+    
+    print('pull_request_data', pull_request_data)
+    print('pull_request_url', pull_request_url)
 
     if pull_request_data["body"]:
+        # We could look for /ai-bot-input{...} and replace it with the generated description
         print("Pull request already has a description, skipping")
         return 0
 
@@ -129,6 +133,8 @@ def main():
             return 0
 
     pull_request_title = pull_request_data["title"]
+    # Add commits to the prompt
+    pull_request_commits = pull_request_data["commits"]
 
     pull_request_files = []
     # Request a maximum of 10 pages (300 files)
