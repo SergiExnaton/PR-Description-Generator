@@ -115,14 +115,13 @@ def main():
         )
         return 1
     pull_request_data = json.loads(pull_request_result.text)
-    
-    #print('pull_request_data', pull_request_data)
-    #print('pull_request_url', pull_request_url)
+    commit_messages = [commit_object["commit"]["message"] for commit_object in pull_request_data["commits"]]
 
-    if pull_request_data["body"]:
-        # We could look for /ai-bot-input{...} and replace it with the generated description
-        print("Pull request already has a description, skipping")
-        return 0
+    # Write it as a comment, not description
+    #if pull_request_data["body"]:
+    #    # We could look for /ai-bot-input{...} and replace it with the generated description
+    #    print("Pull request already has a description, skipping")
+    #    return 0
 
     if allowed_users:
         pr_author = pull_request_data["user"]["login"]
@@ -185,7 +184,7 @@ The title of the pull request is "{pull_request_title}" and the following change
 
         filename = pull_request_file["filename"]
         patch = pull_request_file["patch"]
-        completion_prompt += f"Changes in file {filename}: {patch}\n"
+        completion_prompt += f"Changes in file {filename}: \n{patch}\n"
 
     max_allowed_tokens = 2048  # 4096 is the maximum allowed by OpenAI for GPT-3.5
     characters_per_token = 4  # The average number of characters per token
@@ -217,25 +216,23 @@ The title of the pull request is "{pull_request_title}" and the following change
             generated_pr_description[0].upper() + generated_pr_description[1:]
         )
     print(f"Generated pull request description: '{generated_pr_description}'")
-    issues_url = "%s/repos/%s/issues/%s" % (
-        github_api_url,
-        repo,
-        pull_request_id,
-    )
-    update_pr_description_result = requests.patch(
-        issues_url,
+    # Construct the URL for creating a comment on the pull request
+    comments_url = f"{github_api_url}/repos/{repo}/issues/{pull_request_id}/comments"
+
+    # Make a POST request to add a comment to the pull request
+    add_comment_result = requests.post(
+        comments_url,
         headers=authorization_header,
         json={"body": generated_pr_description},
     )
 
-    if update_pr_description_result.status_code != requests.codes.ok:
+    if add_comment_result.status_code != requests.codes.created:
         print(
-            "Request to update pull request description failed: "
-            + str(update_pr_description_result.status_code)
+            "Request to add comment to pull request failed: "
+            + str(add_comment_result.status_code)
         )
-        print("Response: " + update_pr_description_result.text)
+        print("Response: " + add_comment_result.text)
         return 1
-
 
 if __name__ == "__main__":
     sys.exit(main())
