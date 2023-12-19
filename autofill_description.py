@@ -47,6 +47,202 @@ Overall, this change will improve the quality of the project by helping us detec
 """
 
 
+def get_pull_request_data(pull_request_url, authorization_header):
+    pull_request_result = requests.get(
+        pull_request_url,
+        headers=authorization_header,
+    )
+    if pull_request_result.status_code != requests.codes.ok:
+        print(
+            "Request to get pull request data failed: "
+            + str(pull_request_result.status_code)
+        )
+        return None
+    pull_request_data = json.loads(pull_request_result.text)
+    return pull_request_data
+
+
+def get_current_pr_description(pull_request_data):
+    entire_description = pull_request_data["body"]
+    # Select only what is within the "# Description" section
+    description_start_index = entire_description.find("# Description")
+    if description_start_index == -1:
+        return entire_description
+
+    description_end_index = entire_description.find("#", description_start_index + 1)
+    if description_end_index == -1:
+        return entire_description
+
+    return entire_description[description_start_index:description_end_index]
+
+
+def check_pull_request_author_is_allowed_to_trigger_action(
+    pull_request_data, allowed_users
+):
+    if allowed_users:
+        pr_author = pull_request_data["user"]["login"]
+        if pr_author not in allowed_users:
+            print(
+                f"Pull request author {pr_author} is not allowed to trigger this action"
+            )
+            return 0
+
+
+def get_commit_messages(pull_request_url, authorization_header):
+    pull_commit_url = f"{pull_request_url}/commits"
+    pull_commit_result = requests.get(
+        pull_commit_url,
+        headers=authorization_header,
+    )
+    if pull_commit_result.status_code != requests.codes.ok:
+        print(
+            "Request to get list of commits failed with error code: "
+            + str(pull_commit_result.status_code)
+        )
+        return 1
+    pull_commit_data = json.loads(pull_commit_result.text)
+    commit_messages = "\n".join(
+        [commit_object["commit"]["message"] for commit_object in pull_commit_data]
+    )
+    return commit_messages
+
+
+def get_pull_request_files(pull_request_url, authorization_header):
+    pull_request_files = []
+    # Request a maximum of 10 pages (300 files)
+    for page_num in range(1, 11):
+        pull_files_url = f"{pull_request_url}/files?page={page_num}&per_page=30"
+        pull_files_result = requests.get(
+            pull_files_url,
+            headers=authorization_header,
+        )
+
+        if pull_files_result.status_code != requests.codes.ok:
+            print(
+                "Request to get list of files failed with error code: "
+                + str(pull_files_result.status_code)
+            )
+            return 1
+
+        pull_files_chunk = json.loads(pull_files_result.text)
+
+        if len(pull_files_chunk) == 0:
+            break
+
+        pull_request_files.extend(pull_files_chunk)
+
+    return pull_request_files
+
+
+def construct_prompt(
+    pull_request_title, current_description, commit_messages, pull_request_files
+):
+    prompt = f"""
+Please rewrite the current pull request description focusing on the motivation behind the changes contained in the pull request and why they improve the project. Go straight to the point.
+The title of the pull request is: {pull_request_title} \n
+The current description is: \n {current_description} \n
+This pull request contains the following commits (use them to create a better description): \n {commit_messages}\n
+And the following changes took place: \n
+"""
+    for pull_request_file in pull_request_files:
+        # Not all PR file metadata entries may contain a patch section
+        # For example, entries related to removed binary files may not contain it
+        if "patch" not in pull_request_file:
+            continue
+
+        filename = pull_request_file["filename"]
+        patch = pull_request_file["patch"]
+        prompt += f"Changes in file {filename}: \n{patch}\n"
+
+    return prompt
+
+
+def trim_prompt(prompt):
+    max_allowed_tokens = 2048  # 4096 is the maximum allowed by OpenAI for GPT-3.5
+    characters_per_token = 4  # The average number of characters per token
+    max_allowed_characters = max_allowed_tokens * characters_per_token
+    if len(prompt) > max_allowed_characters:
+        prompt = prompt[:max_allowed_characters]
+
+    return prompt
+
+
+def send_prompt_to_openai(
+    prompt,
+    open_ai_model,
+    openai_api_key,
+    model_sample_prompt,
+    model_sample_response,
+    model_temperature,
+    max_prompt_tokens,
+):
+    openai.api_key = openai_api_key
+    openai_response = openai.ChatCompletion.create(
+        model=open_ai_model,
+        messages=[
+            {
+                "role": "system",
+                "content": "You are a helpful assistant who writes pull request descriptions",
+            },
+            {"role": "user", "content": model_sample_prompt},
+            {"role": "assistant", "content": model_sample_response},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=model_temperature,
+        max_tokens=max_prompt_tokens,
+    )
+
+    return openai_response.choices[0].message.content
+
+
+def add_title_to_description(autogenerated_title, description):
+    return f"{autogenerated_title}\n\n{description}"
+
+
+def write_description_as_comment(
+    pull_request_url, authorization_header, generated_pr_description
+):
+    # Construct the URL for creating a comment on the pull request
+    comments_url = f"{pull_request_url}/comments"
+
+    # Make a POST request to add a comment to the pull request
+    add_comment_result = requests.post(
+        comments_url,
+        headers=authorization_header,
+        json={"body": generated_pr_description},
+    )
+
+    if add_comment_result.status_code != requests.codes.created:
+        print(
+            "Request to add comment to pull request failed: "
+            + str(add_comment_result.status_code)
+        )
+        print("Response: " + add_comment_result.text)
+        return 1
+
+
+def check_if_description_has_already_been_autogenerated(pull_request_url, authorization_header, autogenerated_title):
+    # Check if "autogenerated_title" is already in any of the comments
+    comments_url = f"{pull_request_url}/comments"
+    comments_result = requests.get(
+        comments_url,
+        headers=authorization_header,
+    )
+    if comments_result.status_code != requests.codes.ok:
+        print(
+            "Request to get list of comments failed with error code: "
+            + str(comments_result.status_code)
+        )
+        return 1
+    
+    comments_data = json.loads(comments_result.text)
+    for comment in comments_data:
+        if autogenerated_title in comment["body"]:
+            print("Pull request description has already been autogenerated")
+            return 1
+        
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Use ChatGPT to generate a description for a pull request."
@@ -102,142 +298,38 @@ def main():
         "Accept": "application/vnd.github.v3+json",
         "Authorization": "token %s" % github_token,
     }
-
+    autogenerated_title = "# Auto-generated description:"
     pull_request_url = f"{github_api_url}/repos/{repo}/pulls/{pull_request_id}"
-    pull_request_result = requests.get(
-        pull_request_url,
-        headers=authorization_header,
+    pull_request_data = get_pull_request_data(pull_request_url, authorization_header)
+    check_pull_request_author_is_allowed_to_trigger_action(
+        pull_request_data, allowed_users
     )
-    if pull_request_result.status_code != requests.codes.ok:
-        print(
-            "Request to get pull request data failed: "
-            + str(pull_request_result.status_code)
-        )
-        return 1
-    pull_request_data = json.loads(pull_request_result.text)
-
-    # Write it as a comment, not description
-    #if pull_request_data["body"]:
-    #    # We could look for /ai-bot-input{...} and replace it with the generated description
-    #    print("Pull request already has a description, skipping")
-    #    return 0
-
-    if allowed_users:
-        pr_author = pull_request_data["user"]["login"]
-        if pr_author not in allowed_users:
-            print(
-                f"Pull request author {pr_author} is not allowed to trigger this action"
-            )
-            return 0
-
+    check_if_description_has_already_been_autogenerated(pull_request_url, authorization_header, autogenerated_title)
     pull_request_title = pull_request_data["title"]
-    # Add commits to the prompt
-    pull_commit_url = f"{pull_request_url}/commits"
-    pull_commit_result = requests.get(
-        pull_commit_url,
-        headers=authorization_header,
+    current_description = get_current_pr_description(pull_request_data)
+    commit_messages = get_commit_messages(pull_request_url, authorization_header)
+    pull_request_files = get_pull_request_files(pull_request_url, authorization_header)
+
+    prompt = construct_prompt(
+        pull_request_title, current_description, commit_messages, pull_request_files
     )
-    if pull_commit_result.status_code != requests.codes.ok:
-        print(
-            "Request to get list of commits failed with error code: "
-            + str(pull_commit_result.status_code)
-        )
-        return 1
-    pull_commit_data = json.loads(pull_commit_result.text)
-    commit_messages = [commit_object["commit"]["message"] for commit_object in pull_commit_data]
-    print(f"Commit messages: {commit_messages}")
-
-    pull_request_files = []
-    # Request a maximum of 10 pages (300 files)
-    for page_num in range(1, 11):
-        pull_files_url = f"{pull_request_url}/files?page={page_num}&per_page=30"
-        pull_files_result = requests.get(
-            pull_files_url,
-            headers=authorization_header,
-        )
-
-        if pull_files_result.status_code != requests.codes.ok:
-            print(
-                "Request to get list of files failed with error code: "
-                + str(pull_files_result.status_code)
-            )
-            return 1
-
-        pull_files_chunk = json.loads(pull_files_result.text)
-
-        if len(pull_files_chunk) == 0:
-            break
-
-        pull_request_files.extend(pull_files_chunk)
-
-        completion_prompt = f"""
-Write a pull request description focusing on the motivation behind the change and why it improves the project.
-Go straight to the point.
-
-The title of the pull request is "{pull_request_title}". 
-This pull request contains the following commits (use them to create a better description): \n {commit_messages}.\n
-And the following changes took place: \n
-"""
-    for pull_request_file in pull_request_files:
-        # Not all PR file metadata entries may contain a patch section
-        # For example, entries related to removed binary files may not contain it
-        if "patch" not in pull_request_file:
-            continue
-
-        filename = pull_request_file["filename"]
-        patch = pull_request_file["patch"]
-        completion_prompt += f"Changes in file {filename}: \n{patch}\n"
-
-    max_allowed_tokens = 2048  # 4096 is the maximum allowed by OpenAI for GPT-3.5
-    characters_per_token = 4  # The average number of characters per token
-    max_allowed_characters = max_allowed_tokens * characters_per_token
-    if len(completion_prompt) > max_allowed_characters:
-        completion_prompt = completion_prompt[:max_allowed_characters]
-
-    openai.api_key = openai_api_key
-    openai_response = openai.ChatCompletion.create(
-        model=open_ai_model,
-        messages=[
-            {
-                "role": "system",
-                "content": "You are a helpful assistant who writes pull request descriptions",
-            },
-            {"role": "user", "content": model_sample_prompt},
-            {"role": "assistant", "content": model_sample_response},
-            {"role": "user", "content": completion_prompt},
-        ],
-        temperature=model_temperature,
-        max_tokens=max_prompt_tokens,
+    prompt = trim_prompt(prompt)
+    generated_pr_description = send_prompt_to_openai(
+        prompt,
+        open_ai_model,
+        openai_api_key,
+        model_sample_prompt,
+        model_sample_response,
+        model_temperature,
+        max_prompt_tokens,
     )
 
-    generated_pr_description = openai_response.choices[0].message.content
-    redundant_prefix = "This pull request "
-    if generated_pr_description.startswith(redundant_prefix):
-        generated_pr_description = generated_pr_description[len(redundant_prefix) :]
-        generated_pr_description = (
-            generated_pr_description[0].upper() + generated_pr_description[1:]
-        )
-    
-    # Add title to the description
-    generated_pr_description = f"# Auto-generated description:\n\n{generated_pr_description}"
+    generated_pr_description = add_title_to_description(autogenerated_title, generated_pr_description)
+
     print(f"Generated pull request description: '{generated_pr_description}'")
-    # Construct the URL for creating a comment on the pull request
-    comments_url = f"{github_api_url}/repos/{repo}/issues/{pull_request_id}/comments"
 
-    # Make a POST request to add a comment to the pull request
-    add_comment_result = requests.post(
-        comments_url,
-        headers=authorization_header,
-        json={"body": generated_pr_description},
-    )
+    write_description_as_comment()
 
-    if add_comment_result.status_code != requests.codes.created:
-        print(
-            "Request to add comment to pull request failed: "
-            + str(add_comment_result.status_code)
-        )
-        print("Response: " + add_comment_result.text)
-        return 1
 
 if __name__ == "__main__":
     sys.exit(main())
