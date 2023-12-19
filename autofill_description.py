@@ -116,7 +116,7 @@ def main():
         return 1
     pull_request_data = json.loads(pull_request_result.text)
     print('pull_request_data', pull_request_data['commits'])
-    commit_messages = [commit_object["commit"]["message"] for commit_object in pull_request_data['commits']]
+    #commit_messages = [commit_object["commit"]["message"] for commit_object in pull_request_data['commits']]
 
     # Write it as a comment, not description
     #if pull_request_data["body"]:
