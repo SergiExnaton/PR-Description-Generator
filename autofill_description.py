@@ -115,8 +115,6 @@ def main():
         )
         return 1
     pull_request_data = json.loads(pull_request_result.text)
-    print('pull_request_data', pull_request_data['commits'])
-    #commit_messages = [commit_object["commit"]["message"] for commit_object in pull_request_data['commits']]
 
     # Write it as a comment, not description
     #if pull_request_data["body"]:
@@ -146,7 +144,8 @@ def main():
         )
         return 1
     pull_commit_data = json.loads(pull_commit_result.text)
-    print('pull_commit_data', pull_commit_data)
+    commit_messages = [commit_object["commit"]["message"] for commit_object in pull_commit_data]
+    print(f"Commit messages: {commit_messages}")
 
     pull_request_files = []
     # Request a maximum of 10 pages (300 files)
@@ -175,7 +174,9 @@ def main():
 Write a pull request description focusing on the motivation behind the change and why it improves the project.
 Go straight to the point.
 
-The title of the pull request is "{pull_request_title}" and the following changes took place: \n
+The title of the pull request is "{pull_request_title}". 
+This pull request contains the following commits (use them to create a better description): \n {commit_messages}.\n
+And the following changes took place: \n
 """
     for pull_request_file in pull_request_files:
         # Not all PR file metadata entries may contain a patch section
@@ -216,6 +217,9 @@ The title of the pull request is "{pull_request_title}" and the following change
         generated_pr_description = (
             generated_pr_description[0].upper() + generated_pr_description[1:]
         )
+    
+    # Add title to the description
+    generated_pr_description = f"# Auto-generated description:\n\n{generated_pr_description}"
     print(f"Generated pull request description: '{generated_pr_description}'")
     # Construct the URL for creating a comment on the pull request
     comments_url = f"{github_api_url}/repos/{repo}/issues/{pull_request_id}/comments"
