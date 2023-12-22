@@ -64,10 +64,10 @@ def get_pull_request_data(pull_request_url, authorization_header):
 def get_current_pr_description(pull_request_data):
     entire_description = pull_request_data["body"]
     # Select only what is within the "# Description" section
-    description_start_index = entire_description.find("# Description")
-    if description_start_index == -1:
+    if not entire_description:
         return entire_description
-
+    
+    description_start_index = entire_description.find("# Description")
     description_end_index = entire_description.find("#", description_start_index + 1)
     if description_end_index == -1:
         return entire_description
